@@ -21,4 +21,16 @@
         android:textColor="#FFFFFF"
         android:textSize="14sp" />
 
+    <TextView
+        android:id="@+id/telemetryText"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|start"
+        android:layout_margin="16dp"
+        android:background="#66000000"
+        android:padding="8dp"
+        android:text=""
+        android:textColor="#FFFFFF"
+        android:textSize="14sp" />
+
 </FrameLayout>

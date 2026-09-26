@@ -3,7 +3,6 @@ package com.diegorivas.drone
 import android.Manifest
 import android.content.pm.PackageManager
 import android.graphics.SurfaceTexture
-import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import android.view.TextureView
@@ -14,19 +13,26 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import dji.common.error.DJIError
 import dji.common.error.DJISDKError
+import dji.common.flightcontroller.LocationCoordinate3D
 import dji.common.product.Model
+import dji.keysdk.BatteryKey
+import dji.keysdk.DJIKey
+import dji.keysdk.FlightControllerKey
+import dji.keysdk.KeyManager
+import dji.keysdk.callback.KeyListener
 import dji.sdk.base.BaseComponent
 import dji.sdk.base.BaseProduct
+import dji.sdk.camera.VideoFeeder
 import dji.sdk.codec.DJICodecManager
 import dji.sdk.sdkmanager.DJISDKInitEvent
 import dji.sdk.sdkmanager.DJISDKManager
 
 // NOTA: los nombres exactos de métodos de DJICodecManager (cleanSurface, destroyCodec,
-// sendDataToDecoder) pueden variar levemente entre builds del SDK 4.18. Si Android Studio
-// marca algo en rojo aquí, compara contra VideoFeederView.java en
-// Mobile-SDK-Android-4.18/Sample Code/.../demo/camera/ (ya lo tienes descargado) y ajusta
-// solo esa línea — el resto del flujo (listener -> sendDataToDecoder) es correcto.
-import dji.sdk.camera.VideoFeeder;
+// sendDataToDecoder) y de las keys de BatteryKey/FlightControllerKey pueden variar
+// levemente entre builds del SDK 4.18. Si Android Studio marca algo en rojo, compara
+// contra el sample code de DJI (VideoFeederView.java, BatteryView / FlightControllerView
+// en Mobile-SDK-Android-4.18/Sample Code/.../demo/) y ajusta solo esa línea.
+import dji.keysdk.callback.GetCallback
 class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
 
     companion object {
@@ -47,14 +53,20 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
     }
 
     private lateinit var statusText: TextView
+    private lateinit var telemetryText: TextView
     private lateinit var videoSurface: TextureView
     private var codecManager: DJICodecManager? = null
+
+    // ---------- Estado de telemetría ----------
+    private var batteryPercent: Int? = null
+    private var location: LocationCoordinate3D? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
         statusText = findViewById(R.id.statusText)
+        telemetryText = findViewById(R.id.telemetryText)
         videoSurface = findViewById(R.id.videoSurface)
         videoSurface.surfaceTextureListener = this
 
@@ -122,6 +134,7 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
                     val model: Model? = product?.model
                     runOnUiThread { updateStatus("DRONE CONNECTED: $model") }
                     Log.i(TAG, "DRONE CONNECTED: $model")
+                    startTelemetryListeners()
                 }
 
                 override fun onProductChanged(product: BaseProduct?) {
@@ -149,6 +162,56 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
 
     private fun updateStatus(message: String) {
         statusText.text = message
+    }
+
+    // ---------- Telemetría (batería, GPS, altitud) ----------
+
+    private fun startTelemetryListeners() {
+        val batteryKey: DJIKey = BatteryKey.create(BatteryKey.CHARGE_REMAINING_IN_PERCENT)
+        val locationKey: DJIKey = FlightControllerKey.create(FlightControllerKey.AIRCRAFT_LOCATION)
+
+        // Pide el valor actual de una vez (addListener solo avisa de cambios futuros)
+        KeyManager.getInstance()?.getValue(batteryKey, object : GetCallback {
+            override fun onSuccess(value: Any) {
+                batteryPercent = value as? Int
+                runOnUiThread { updateTelemetryText() }
+            }
+            override fun onFailure(error: DJIError) {
+                Log.e(TAG, "Error leyendo batería: ${error.description}")
+            }
+        })
+
+        KeyManager.getInstance()?.getValue(locationKey, object : GetCallback {
+            override fun onSuccess(value: Any) {
+                location = value as? LocationCoordinate3D
+                runOnUiThread { updateTelemetryText() }
+            }
+            override fun onFailure(error: DJIError) {
+                Log.e(TAG, "Error leyendo ubicación: ${error.description}")
+            }
+        })
+
+        KeyManager.getInstance()?.addListener(batteryKey, object : KeyListener {
+            override fun onValueChange(oldValue: Any?, newValue: Any?) {
+                batteryPercent = newValue as? Int
+                runOnUiThread { updateTelemetryText() }
+            }
+        })
+
+        KeyManager.getInstance()?.addListener(locationKey, object : KeyListener {
+            override fun onValueChange(oldValue: Any?, newValue: Any?) {
+                location = newValue as? LocationCoordinate3D
+                runOnUiThread { updateTelemetryText() }
+            }
+        })
+    }
+
+    private fun updateTelemetryText() {
+        val bat = batteryPercent?.let { "$it%" } ?: "--"
+        val lat = location?.latitude?.let { "%.5f".format(it) } ?: "--"
+        val lon = location?.longitude?.let { "%.5f".format(it) } ?: "--"
+        val alt = location?.altitude?.let { "%.1f m".format(it) } ?: "--"
+        telemetryText.text = "BAT: $bat\nLAT: $lat  LON: $lon\nALT: $alt"
     }
 
     // ---------- Video en vivo (VideoFeeder + DJICodecManager) ----------
