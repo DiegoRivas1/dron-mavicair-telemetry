@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">MavicAirTelemetry</string>
+    <string name="status_initializing">Inicializando…</string>
+</resources>

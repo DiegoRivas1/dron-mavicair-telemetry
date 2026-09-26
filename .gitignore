@@ -1,0 +1,26 @@
+*.iml
+.gradle
+/local.properties
+/.idea/caches
+/.idea/libraries
+/.idea/modules.xml
+/.idea/workspace.xml
+/.idea/navEditor.xml
+/.idea/assetWizardSettings.xml
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+
+# APKs generados (pesan ~200MB por el SDK de DJI, no van al repo)
+*.apk
+*.aab
+
+# Keystores (nunca subir claves de firma)
+*.jks
+*.keystore
+
+app/build/
+app/release/
+*.log
