@@ -36,7 +36,7 @@ import dji.sdk.sdkmanager.DJISDKManager
 // en Mobile-SDK-Android-4.18/Sample Code/.../demo/) y ajusta solo esa línea.
 import dji.logic.manager.DJIUSBWifiSwitchManager
 import dji.sdk.airlink.WiFiLink
-
+import android.widget.Button
 
 class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
 
@@ -84,7 +84,9 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
     private var bandwidth: Any? = null
     private var dynamicDataRate: Any? = null
 
-
+    //Boton
+    private lateinit var recButton: Button
+    private val videoRecorder by lazy { VideoRecorder(this) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -97,12 +99,29 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
         airLinkText = findViewById(R.id.airLinkText)
         videoSurface = findViewById(R.id.videoSurface)
 
+        //Boton
+        recButton = findViewById(R.id.recButton)
+        recButton.setOnClickListener { toggleRecording() }
+
         videoSurface.surfaceTextureListener = this
 
         if (hasAllPermissions()) {
             registerDjiApp()
         } else {
             requestMissingPermissions()
+        }
+    }
+
+    //Funcion nueva
+    private fun toggleRecording() {
+        if (videoRecorder.isRecording) {
+            videoRecorder.stop()
+            recButton.text = "● REC"
+            Toast.makeText(this, "Guardado: ${videoRecorder.currentFile?.name}", Toast.LENGTH_LONG).show()
+        } else {
+            videoRecorder.start()
+            recButton.text = "■ STOP"
+            Toast.makeText(this, "Grabando: ${videoRecorder.currentFile?.name}", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -718,11 +737,8 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
 
     private val videoDataListener =
         VideoFeeder.VideoDataListener { videoBuffer, size ->
-
-            codecManager?.sendDataToDecoder(
-                videoBuffer,
-                size
-            )
+            codecManager?.sendDataToDecoder(videoBuffer, size)
+            videoRecorder.write(videoBuffer, size)
         }
 
     private fun startVideoFeed() {
@@ -797,6 +813,7 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
 
         codecManager?.destroyCodec()
 
+        videoRecorder.stop()
         super.onDestroy()
     }
 }
