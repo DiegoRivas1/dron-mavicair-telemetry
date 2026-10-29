@@ -18,7 +18,7 @@
         android:layout_margin="16dp"
         android:background="#66000000"
         android:padding="8dp"
-        android:text="@string/status_initializing"
+        android:text="Inicializando..."
         android:textColor="#FFFFFF"
         android:textSize="14sp" />
 
@@ -36,19 +36,80 @@
         android:textColor="#FFFFFF"
         android:textSize="14sp" />
 
-    <!-- Diagnóstico AirLink -->
-    <TextView
-        android:id="@+id/airLinkText"
-        android:layout_width="wrap_content"
+    <!-- Controles de vuelo -->
+    <ScrollView
+        android:layout_width="320dp"
         android:layout_height="wrap_content"
         android:layout_gravity="top|end"
         android:layout_margin="16dp"
         android:background="#99000000"
-        android:padding="10dp"
-        android:text="AIRLINK DIAGNOSTIC&#10;&#10;Esperando datos..."
-        android:textColor="#FFFFFF"
-        android:textSize="13sp" />
+        android:fillViewport="true">
 
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="10dp">
+
+            <TextView
+                android:id="@+id/virtualStickText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="PRUEBA VIRTUAL STICK&#10;&#10;Esperando..."
+                android:textColor="#FFFFFF"
+                android:textSize="13sp" />
+
+            <Button
+                android:id="@+id/enableVirtualStickButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="1. ACTIVAR CONTROL" />
+
+            <Button
+                android:id="@+id/takeoffButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:enabled="false"
+                android:text="2. DESPEGAR → 1 m" />
+
+            <Button
+                android:id="@+id/autoTestButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:enabled="false"
+                android:text="3. PRUEBA AUTOMÁTICA" />
+
+            <Button
+                android:id="@+id/testForwardButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:enabled="false"
+                android:text="4. AVANZAR 1 s" />
+
+            <Button
+                android:id="@+id/returnButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:enabled="false"
+                android:text="5. REGRESAR 1 s" />
+
+            <Button
+                android:id="@+id/testOneMeterButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:enabled="false"
+                android:text="6. A → 1 m → A" />
+
+            <Button
+                android:id="@+id/emergencyStopButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="STOP / HOVER" />
+
+        </LinearLayout>
+    </ScrollView>
+
+    <!-- Grabación H.264 -->
     <Button
         android:id="@+id/recButton"
         android:layout_width="wrap_content"
@@ -56,5 +117,30 @@
         android:layout_gravity="bottom|end"
         android:layout_margin="16dp"
         android:text="● REC" />
+
+    <!-- ========================================================= -->
+    <!-- LOG EN PANTALLA (errores y eventos DJI) - capa flotante   -->
+    <!-- Se coloca a la izquierda, debajo de la telemetría, para   -->
+    <!-- no tapar los controles ni el vídeo central.               -->
+    <!-- ========================================================= -->
+    <ScrollView
+        android:id="@+id/errorLogScroll"
+        android:layout_width="280dp"
+        android:layout_height="180dp"
+        android:layout_gravity="bottom|start"
+        android:layout_marginStart="16dp"
+        android:layout_marginBottom="140dp"
+        android:background="#CC000000"
+        android:padding="6dp">
+
+        <TextView
+            android:id="@+id/errorLogText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:fontFamily="monospace"
+            android:text="--- LOG ---"
+            android:textColor="#FFEB3B"
+            android:textSize="10sp" />
+    </ScrollView>
 
 </FrameLayout>
