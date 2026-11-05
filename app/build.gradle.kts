@@ -1,5 +1,6 @@
 plugins {
     id("com.android.application")
+    // AGP 9 ya compila los .kt (built-in Kotlin); no hace falta este plugin.
     //id("org.jetbrains.kotlin.android")
 }
 

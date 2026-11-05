@@ -1,33 +1,104 @@
 # dron-mavicair-telemetry
 
-Etapa 2: video en vivo del DJI Mavic Air (WM230) usando DJI Mobile SDK 4.18.
+App Android (Kotlin, DJI Mobile SDK 4.18) para el **DJI Mavic Air (WM230)**: video en vivo,
+telemetría, Virtual Stick, navegación GPS, misiones Waypoint y envío de todo a la PC
+(proyecto separado **drone-ground-station**, FastAPI).
 
-## Cómo usarlo
+```
+Mavic Air ──► Control remoto ──USB──► esta app ──Wi-Fi──► PC (FastAPI + panel web)
+```
 
-1. Descomprime este zip **sobre tu carpeta local del proyecto**, reemplazando lo existente
-   (o como base si vas a crear el repo `dron-mavicair-telemetry` desde cero).
-2. Abre la carpeta en Android Studio (**File → Open**, no "New Project").
-3. En `app/src/main/AndroidManifest.xml`, reemplaza `TU_API_KEY_DJI_AQUI` con la misma
-   API Key de developer.dji.com que ya usaste cuando lograste `REGISTRATION SUCCESS`.
-4. Sincroniza Gradle. Si Android Studio sugiere otra versión de AGP/Kotlin al abrir,
-   acepta el ajuste automático (están en `build.gradle.kts` raíz).
-5. Conecta: teléfono → USB → control remoto → dron encendido.
-6. Compila e instala:
-   ```
-   adb install -r -t app/build/outputs/apk/debug/app-debug.apk
-   ```
-7. Deberías ver en pantalla:
-   - Arriba a la izquierda: `REGISTRATION SUCCESS` → `DRONE CONNECTED: ...`
-   - En el resto de la pantalla: el video en vivo de la cámara del dron.
+## Estructura
 
-## Si algo no compila
+```
+com.diegorivas.drone/
+├── DroneApplication.kt            Helper.install() (sin cambios)
+├── MainActivity.kt                Sólo interfaz: botones, estados, diálogos
+├── data/
+│   ├── model/                     RoutePoint + FlightRoute, TelemetryData, FlightEvent, FlightSession
+│   └── repository/
+│       ├── RouteRepository.kt     Ruta A→B→A desde la posición real del dron / ruta del panel
+│       └── FlightRepository.kt    Un evento = CSV local + servidor PC
+├── dji/
+│   ├── DjiConnectionManager.kt    Registro y conexión (lógica igual que antes)
+│   ├── TelemetryManager.kt        KeyManager: GPS, altitud, velocidad, rumbo, batería, satélites, modo
+│   ├── FlightControllerManager.kt Despegue, aterrizaje, modo de navegación (VS vs Waypoint)
+│   ├── VirtualStickController.kt  Comandos 100 ms, movimientos por tiempo, goTo GPS
+│   ├── WaypointMissionManager.kt  Builder → loadMission → uploadMission → startMission
+│   └── VideoManager.kt            VideoFeeder → pantalla + archivo + PC
+├── network/
+│   ├── ApiClient.kt               HTTP (HttpURLConnection, sin librerías extra)
+│   ├── TelemetryApi.kt            Telemetría 2 Hz + eventos, con cola si no hay Wi-Fi
+│   └── VideoStreamClient.kt       Video por bloques; si hubo pérdidas sube el archivo completo
+├── recording/
+│   ├── TelemetryLogger.kt         CSV local (mismo formato)
+│   └── VideoRecorder.kt           .h264 local (respaldo)
+└── utils/
+    ├── GeoUtils.kt                Distancia, rumbo, destino, error N/E, llegada, distancia recorrida
+    └── FlightValidator.kt         Batería, GPS, límites de ruta
+```
 
-`DJICodecManager` puede tener nombres de método ligeramente distintos según el build
-exacto del SDK 4.18. Hay una nota en `MainActivity.kt` señalando dónde comparar contra
-tu copia local de `VideoFeederView.java` (en el sample code de DJI que ya descargaste)
-si Android Studio marca algún método en rojo.
+## Qué se conservó tal cual
 
-## Siguiente paso sugerido
+- `Helper.install()` en `DroneApplication`.
+- Registro DJI → `startConnectionToProduct()`, fallback del `FlightController`.
+- Despegue: `startTakeoff()` → esperar 0.9 m (timeout 15 s) → estabilizar 2 s → comando 0.
+- Virtual Stick: `VELOCITY / VELOCITY / ANGULAR_VELOCITY / BODY`, envío cada 100 ms, `TEST_SPEED = 0.25`.
+- Pruebas 2 a 6, STOP (cinco comandos 0), formato CSV de telemetría, log en pantalla y `dji_errors.log`.
+- API Key y versiones de AGP / SDK / dependencias.
 
-Una vez que el video se vea, el siguiente archivo que te paso agregará lectura de
-telemetría básica (batería, GPS, altitud) en paralelo al video.
+## Novedades
+
+| Botón | Qué hace |
+|---|---|
+| **ATERRIZAR** | Ya existía en el XML pero no tenía código. `startLanding()` + `confirmLanding()` automático cerca del suelo. Pide confirmación. |
+| **1. ACTIVAR CONTROL** | Ahora también **desactiva** (devuelve el control al mando). |
+| **7. GPS A → B → A (3 m)** | Virtual Stick con corrección por GPS del dron: va a 3 m en la dirección del morro y vuelve. Aborta y queda en hover si pierde GPS, si tarda > 30 s o si se **aleja** del objetivo. |
+| **WP: CARGAR A→B→A (5 m)** | Misión Waypoint de prueba desde la posición actual (3 m de altura, 1 m/s). |
+| **WP: CARGAR RUTA DEL PANEL** | Descarga la ruta activa dibujada en el panel web. |
+| **WP: SUBIR / INICIAR / DETENER** | Flujo DJI. Antes de iniciar se desactiva Virtual Stick. Al terminar queda en hover (`NO_ACTION`). |
+| **● REC** | Graba en el teléfono **y** envía a la PC (video en vivo en el panel). |
+| **PC: …** | IP del servidor (se guarda). |
+
+Telemetría en pantalla: ahora incluye satélites, nivel GPS y modo de vuelo.
+Si el despegue falla, el log muestra `code`, descripción y el estado del dron (modo, motores, GPS, batería…).
+
+**Virtual Stick y Waypoint nunca a la vez:** `FlightControllerManager` guarda el modo activo
+(`IDLE / VIRTUAL_STICK / WAYPOINT`) y rechaza el otro.
+
+## ⚠ Verificar antes de usar la navegación GPS (botón 7)
+
+En `VirtualStickController.kt` hay `VELOCITY_AXES_SWAPPED = false` (igual que tu código actual:
+`pitch` = adelante). Varios desarrolladores reportan que en MSDK 4 con modo `VELOCITY` los ejes van cruzados.
+
+1. Despega y pulsa **4. AVANZAR 1 s**.
+2. Si el dron va **hacia adelante** → está bien.
+3. Si se mueve **de lado** → cambia a `VELOCITY_AXES_SWAPPED = true` y recompila.
+
+La protección de divergencia detiene el botón 7 si el mapeo es incorrecto, pero haz esta prueba primero.
+
+## Orden de pruebas recomendado
+
+1. Sin hélices: conexión, telemetría, video, PC conectada, REC.
+2. Zona abierta y autorizada, control remoto en mano: activar control → despegar → STOP → aterrizar.
+3. Pruebas 4/5/6 por tiempo (y verificar el mapeo de ejes).
+4. Con buen GPS (≥ 8 satélites, nivel ≥ 3): botón 7.
+5. Waypoint: cargar → subir → iniciar → observar → STOP si hace falta → aterrizar.
+
+## Compilar
+
+Abrir en Android Studio (**File → Open**) o:
+
+```
+gradlew assembleDebug
+gradlew testDebugUnitTest      # tests de GeoUtils y FlightValidator
+```
+
+El plugin `org.jetbrains.kotlin.android` sigue comentado a propósito: AGP 9 compila Kotlin de forma integrada.
+
+## Archivos en el teléfono
+
+`Android/data/com.diegorivas.drone/files/`
+- `telemetry/vuelo_YYYYMMDD_HHMMSS.csv`
+- `Movies/vuelos/vuelo_..._rec_HHMMSS.h264`
+- `dji_errors.log`
