@@ -51,30 +51,19 @@ class DjiConnectionManager(
     val isConnected: Boolean
         get() = DJISDKManager.getInstance().product?.isConnected == true
 
-    private var retryCount = 0
-    private val maxRetries = 3
-
     fun register() {
-        listener.onLog('I', "Registrando app con DJI (intento ${retryCount + 1})...")
+        listener.onLog('I', "Registrando app con DJI...")
+
         DJISDKManager.getInstance().registerApp(
             context.applicationContext,
             object : DJISDKManager.SDKManagerCallback {
 
                 override fun onRegister(error: DJIError?) {
                     if (error == DJISDKError.REGISTRATION_SUCCESS) {
-                        retryCount = 0
                         post { listener.onRegistrationResult(true, "REGISTRATION SUCCESS") }
                         DJISDKManager.getInstance().startConnectionToProduct()
                     } else {
-                        if (retryCount < maxRetries) {
-                            retryCount++
-                            val delay = 3000L * retryCount
-                            post { listener.onRegistrationResult(false, "Reintentando en ${delay/1000}s...") }
-                            main.postDelayed({ register() }, delay)
-                        } else {
-                            retryCount = 0
-                            post { listener.onRegistrationResult(false, "Fallo tras $maxRetries intentos: ${error?.description}") }
-                        }
+                        post { listener.onRegistrationResult(false, "Registro fallido: ${error?.description}") }
                     }
                 }
 

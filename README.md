@@ -29,9 +29,11 @@ com.diegorivas.drone/
 ├── network/
 │   ├── ApiClient.kt               HTTP (HttpURLConnection, sin librerías extra)
 │   ├── TelemetryApi.kt            Telemetría 2 Hz + eventos, con cola si no hay Wi-Fi
-│   └── VideoStreamClient.kt       Video por bloques; si hubo pérdidas sube el archivo completo
+│   ├── VideoStreamClient.kt       Video en vivo por bloques al panel
+│   └── RecorridoClient.kt         Reserva el tramo (REC) y lo sube a la PC (STOP)
 ├── recording/
 │   ├── TelemetryLogger.kt         CSV local (mismo formato)
+│   ├── TramoRecorder.kt           Carpeta de cada tramo (video + telemetría + meta)
 │   └── VideoRecorder.kt           .h264 local (respaldo)
 └── utils/
     ├── GeoUtils.kt                Distancia, rumbo, destino, error N/E, llegada, distancia recorrida
@@ -57,7 +59,8 @@ com.diegorivas.drone/
 | **WP: CARGAR A→B→A (5 m)** | Misión Waypoint de prueba desde la posición actual (3 m de altura, 1 m/s). |
 | **WP: CARGAR RUTA DEL PANEL** | Descarga la ruta activa dibujada en el panel web. |
 | **WP: SUBIR / INICIAR / DETENER** | Flujo DJI. Antes de iniciar se desactiva Virtual Stick. Al terminar queda en hover (`NO_ACTION`). |
-| **● REC** | Graba en el teléfono **y** envía a la PC (video en vivo en el panel). |
+| **● REC / ■ STOP** | Un **tramo** del recorrido abierto en la PC: carpeta con `video.h264`, `telemetria.csv` (formato de inspeccion-dron) y `meta.json`. Al pulsar STOP se sube sola a la PC. Durante la grabación también se ve en vivo en el panel. |
+| **REENVIAR TRAMOS PENDIENTES** | Tramos que no llegaron a la PC (sin Wi-Fi o sin recorrido abierto). |
 | **PC: …** | IP del servidor (se guarda). |
 
 Telemetría en pantalla: ahora incluye satélites, nivel GPS y modo de vuelo.
@@ -100,5 +103,5 @@ El plugin `org.jetbrains.kotlin.android` sigue comentado a propósito: AGP 9 com
 
 `Android/data/com.diegorivas.drone/files/`
 - `telemetry/vuelo_YYYYMMDD_HHMMSS.csv`
-- `Movies/vuelos/vuelo_..._rec_HHMMSS.h264`
+- `tramos/tramo_YYYYMMDD_HHMMSS/` → `video.h264`, `telemetria.csv`, `meta.json`, `estado.json`
 - `dji_errors.log`

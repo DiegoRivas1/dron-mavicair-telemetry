@@ -205,6 +205,14 @@
                 android:layout_marginTop="4dp"
                 android:text="● REC" />
 
+            <!-- Tramos que no llegaron a la PC (sin Wi-Fi / sin recorrido abierto) -->
+            <Button
+                android:id="@+id/resendButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:enabled="false"
+                android:text="SIN TRAMOS PENDIENTES" />
+
             <Button
                 android:id="@+id/serverButton"
                 android:layout_width="match_parent"

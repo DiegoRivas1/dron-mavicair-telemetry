@@ -5,10 +5,16 @@ import android.os.Looper
 import com.diegorivas.drone.data.model.TelemetryData
 import dji.common.error.DJIError
 import dji.common.util.CommonCallbacks
+import dji.keysdk.FlightControllerKey
+import dji.keysdk.KeyManager
+import dji.keysdk.callback.ActionCallback
 import dji.sdk.flightcontroller.FlightController
 
 /** Quién tiene el control del movimiento del dron en cada momento. */
 enum class NavigationMode { IDLE, VIRTUAL_STICK, WAYPOINT }
+
+/** Forma de pedir el despegue al SDK. */
+enum class TakeoffMethod { SDK_CALL, KEY_ACTION }
 
 /**
  * Despegue, aterrizaje y espera de altura. También arbitra el modo de navegación
@@ -70,7 +76,8 @@ class FlightControllerManager(
         onError: (String) -> Unit,
         onTakeoffAccepted: () -> Unit,
         onAltitudeReached: (Float?) -> Unit,
-        onTimeout: (Float?) -> Unit
+        onTimeout: (Float?) -> Unit,
+        method: TakeoffMethod = TakeoffMethod.SDK_CALL
     ) {
         val fc = fcProvider()
         if (fc == null) {
@@ -79,24 +86,42 @@ class FlightControllerManager(
         }
         takeoffRunning = true
 
-        fc.startTakeoff(object : CommonCallbacks.CompletionCallback<DJIError> {
-            override fun onResult(error: DJIError?) {
-                main.post {
-                    if (error != null) {
-                        takeoffRunning = false
-                        onLog(
-                            'E',
-                            "TAKEOFF ERROR: code=${error.errorCode} class=${error.javaClass.simpleName} " +
-                                    "description=${error.description} | ${diagnostics()}"
-                        )
-                        onError(error.description ?: error.toString())
-                        return@post
-                    }
+        val handle: (DJIError?) -> Unit = { error ->
+            main.post {
+                if (error != null) {
+                    takeoffRunning = false
+                    onLog(
+                        'E',
+                        "TAKEOFF ERROR [$method]: code=${error.errorCode} class=${error.javaClass.simpleName} " +
+                                "description=${error.description} | ${diagnostics()}"
+                    )
+                    onError(error.description ?: error.toString())
+                } else {
+                    onLog('I', "TAKEOFF aceptado [$method]")
                     onTakeoffAccepted()
                     waitForAltitude(targetAltitude, timeoutMs, onAltitudeReached, onTimeout)
                 }
             }
-        })
+        }
+
+        when (method) {
+            TakeoffMethod.SDK_CALL -> fc.startTakeoff(object : CommonCallbacks.CompletionCallback<DJIError> {
+                override fun onResult(error: DJIError?) = handle(error)
+            })
+            // Misma orden por la vía KeyManager (camino interno distinto del SDK).
+            TakeoffMethod.KEY_ACTION -> {
+                val km = KeyManager.getInstance()
+                if (km == null) {
+                    takeoffRunning = false
+                    onError("KeyManager no disponible")
+                    return
+                }
+                km.performAction(FlightControllerKey.create(FlightControllerKey.TAKE_OFF), object : ActionCallback {
+                    override fun onSuccess() = handle(null)
+                    override fun onFailure(error: DJIError) = handle(error)
+                })
+            }
+        }
     }
 
     private fun waitForAltitude(

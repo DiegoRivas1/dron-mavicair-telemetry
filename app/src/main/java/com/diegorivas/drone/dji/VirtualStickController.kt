@@ -202,16 +202,18 @@ class VirtualStickController(
     }
 
     /** Detiene envíos/bucles. No manda ningún comando por sí mismo. */
+    /** Detiene envíos/bucles. No manda ningún comando por sí mismo. */
     fun stopMovement() {
         isMoving = false
         forwardCmd = 0f
         rightCmd = 0f
         sender?.let { main.removeCallbacks(it) }
         gpsLoop?.let { main.removeCallbacks(it) }
+        moveEndRunnable?.let { main.removeCallbacks(it) }
         sender = null
         gpsLoop = null
-        moveEndRunnable = null;
-        //main.removeCallbacksAndMessages(null)
+        moveEndRunnable = null
+        // NO usar main.removeCallbacksAndMessages(null): borra callbacks ajenos
     }
 
     /** STOP / HOVER: corta todo y manda 0 cinco veces (como emergencyStop anterior). */

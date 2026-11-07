@@ -23,22 +23,35 @@ class VideoRecorder(private val context: Context) {
         private set
     val isRecording: Boolean @Synchronized get() = out != null
 
+    /** Instante (epoch ms) en que llegó el primer dato de video tras start(). */
+    @Volatile
+    var firstWriteMs: Long? = null
+        private set
+
     @Synchronized
     fun start(name: String? = null): File? {
-        if (out != null) return currentFile
         val dir = File(context.getExternalFilesDir(Environment.DIRECTORY_MOVIES), "vuelos")
             .apply { mkdirs() }
         val fileName = name
             ?: ("vuelo_" + SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date()))
-        val file = File(dir, "$fileName.h264")
+        return startAt(File(dir, "$fileName.h264"))
+    }
+
+    /** Graba en un archivo concreto (lo usa la carpeta de cada tramo). */
+    @Synchronized
+    fun startAt(file: File): File? {
+        if (out != null) return currentFile
+        file.parentFile?.mkdirs()
         out = BufferedOutputStream(FileOutputStream(file), 256 * 1024)
         currentFile = file
+        firstWriteMs = null
         return file
     }
 
     @Synchronized
     fun write(buffer: ByteArray, size: Int) {
         try {
+            if (out != null && firstWriteMs == null) firstWriteMs = System.currentTimeMillis()
             out?.write(buffer, 0, size)
         } catch (e: Exception) {
             stop()

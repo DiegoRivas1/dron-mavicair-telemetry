@@ -51,6 +51,16 @@ class VideoManager(
         return file
     }
 
+    /** Como startRecording, pero el .h264 se guarda en la carpeta del tramo. */
+    fun startRecordingTo(file: File, recordingId: String, flightId: String): File? {
+        val f = recorder.startAt(file)
+        streamClient.start(recordingId, flightId)
+        return f
+    }
+
+    /** Hora (epoch ms) del primer dato de video de la grabación actual. */
+    val firstVideoDataMs: Long? get() = recorder.firstWriteMs
+
     fun stopRecording(): File? {
         recorder.stop()
         val file = recorder.currentFile
