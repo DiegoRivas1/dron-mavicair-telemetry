@@ -14,8 +14,7 @@
         android:maxSdkVersion="28" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
-    <uses-permission android:name="android.hardware.usb.host" />
-
+    <!-- USB host es una "feature", no un permiso (se quitó el uses-permission incorrecto) -->
     <uses-feature android:name="android.hardware.usb.host" android:required="false" />
 
     <application
@@ -27,7 +26,8 @@
         android:usesCleartextTraffic="true"
         android:theme="@style/Theme.MavicAirTelemetry">
 
-        <!-- TODO: reemplaza con tu API Key real de developer.dji.com (la misma que ya usas) -->
+        <!-- API Key de developer.dji.com -->
+        <!-- usesCleartextTraffic=true es necesario para hablar con FastAPI por http:// en la red local -->
         <meta-data
             android:name="com.dji.sdk.API_KEY"
             android:value="ec49dfcda63045cb751118ec" />
