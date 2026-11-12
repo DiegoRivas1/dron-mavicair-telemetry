@@ -239,6 +239,7 @@ class MainActivity : AppCompatActivity(), DjiConnectionManager.Listener {
             onEvent = { type, details -> event(type, details) }
         )
         video = VideoManager(this, videoStreamClient)
+        video.onLog = { msg -> uiHandler.post { logI(msg) } }
         tramoRecorder = TramoRecorder(this)
         recorridoClient = RecorridoClient(apiClient)
         liveStreamer = LiveFrameStreamer(apiClient, videoSurface) { msg -> logI(msg) }

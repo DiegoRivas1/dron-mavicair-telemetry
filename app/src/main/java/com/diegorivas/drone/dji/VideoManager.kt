@@ -29,10 +29,43 @@ class VideoManager(
     val isRecording: Boolean get() = recorder.isRecording
     val currentFile: File? get() = recorder.currentFile
 
+    /** SPS/PPS del dron, para que cada grabación sea decodificable (ver H264ParamCache). */
+    val params = H264ParamCache()
+
+    /** Mensajes para el log de la app (los pone MainActivity). */
+    var onLog: (String) -> Unit = {}
+
+    /** Grabación iniciada sin SPS/PPS: se escriben en cuanto aparezcan. */
+    @Volatile private var headerPending = false
+
     private val videoDataListener = VideoFeeder.VideoDataListener { videoBuffer, size ->
         codecManager?.sendDataToDecoder(videoBuffer, size)
+        val hadParams = params.hasParams
+        params.scan(videoBuffer, size)
+        if (!hadParams && params.hasParams) onLog("Video: SPS/PPS del dron detectados (las grabaciones serán decodificables)")
+        if (headerPending && params.hasParams) {
+            headerPending = false
+            writeHeader()
+        }
         recorder.write(videoBuffer, size)
         streamClient.write(videoBuffer, size)
+    }
+
+    /** Escribe SPS/PPS al principio de la grabación (archivo local y PC). */
+    private fun writeHeader() {
+        val header = params.header() ?: return
+        recorder.writeHeader(header)
+        streamClient.write(header, header.size)
+    }
+
+    private fun afterRecordingStarted() {
+        if (params.hasParams) {
+            headerPending = false
+            writeHeader()
+        } else {
+            headerPending = true
+            onLog("Video: aún no llegaron SPS/PPS del dron; se añadirán en cuanto aparezcan")
+        }
     }
 
     fun startVideoFeed() {
@@ -48,6 +81,7 @@ class VideoManager(
     fun startRecording(recordingId: String, flightId: String): File? {
         val file = recorder.start(recordingId)
         streamClient.start(recordingId, flightId)
+        afterRecordingStarted()
         return file
     }
 
@@ -55,6 +89,7 @@ class VideoManager(
     fun startRecordingTo(file: File, recordingId: String, flightId: String): File? {
         val f = recorder.startAt(file)
         streamClient.start(recordingId, flightId)
+        afterRecordingStarted()
         return f
     }
 
@@ -62,6 +97,7 @@ class VideoManager(
     val firstVideoDataMs: Long? get() = recorder.firstWriteMs
 
     fun stopRecording(): File? {
+        headerPending = false
         recorder.stop()
         val file = recorder.currentFile
         streamClient.stop(file)

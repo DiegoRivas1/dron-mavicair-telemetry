@@ -58,6 +58,16 @@ class VideoRecorder(private val context: Context) {
         }
     }
 
+    /** Escribe SPS/PPS sin contarlo como "primer dato de video" (sincronía con la telemetría). */
+    @Synchronized
+    fun writeHeader(header: ByteArray) {
+        try {
+            out?.write(header)
+        } catch (e: Exception) {
+            stop()
+        }
+    }
+
     @Synchronized
     fun stop() {
         try { out?.flush(); out?.close() } catch (_: Exception) {}
