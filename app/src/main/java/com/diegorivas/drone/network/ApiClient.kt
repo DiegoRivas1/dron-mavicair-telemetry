@@ -52,8 +52,12 @@ class ApiClient(context: Context) {
     fun postJson(path: String, json: String): Response =
         request("POST", path, json.toByteArray(Charsets.UTF_8), "application/json; charset=utf-8")
 
-    fun postBytes(path: String, bytes: ByteArray, length: Int = bytes.size): Response =
-        request("POST", path, bytes, "application/octet-stream", length)
+    fun postBytes(
+        path: String,
+        bytes: ByteArray,
+        length: Int = bytes.size,
+        contentType: String = "application/octet-stream"
+    ): Response = request("POST", path, bytes, contentType, length)
 
     /** Sube un archivo completo por streaming (no lo carga en memoria). */
     fun uploadFile(path: String, file: File): Response {

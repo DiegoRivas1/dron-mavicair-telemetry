@@ -26,6 +26,14 @@ object FlightValidator {
         val bat = t.batteryPercent
         if (bat != null && bat < MIN_BATTERY_FOR_TAKEOFF) return "Batería baja ($bat%)."
         if (t.isFlying) return "El dron ya está volando."
+        if (t.areMotorsOn) return "Los motores ya están encendidos."
+        val mode = t.flightMode ?: ""
+        if (mode.contains("sport", ignoreCase = true)) {
+            return "El mando está en S (Sport). Pon el interruptor en P."
+        }
+        if (mode.contains("tripod", ignoreCase = true)) {
+            return "El dron está en modo Trípode. Pon el interruptor en P."
+        }
         return null
     }
 

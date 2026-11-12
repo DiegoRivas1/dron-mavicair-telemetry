@@ -44,7 +44,7 @@ com.diegorivas.drone/
 
 - `Helper.install()` en `DroneApplication`.
 - Registro DJI → `startConnectionToProduct()`, fallback del `FlightController`.
-- Despegue: `startTakeoff()` → esperar 0.9 m (timeout 15 s) → estabilizar 2 s → comando 0.
+- Estabilizar 2 s tras el despegue.
 - Virtual Stick: `VELOCITY / VELOCITY / ANGULAR_VELOCITY / BODY`, envío cada 100 ms, `TEST_SPEED = 0.25`.
 - Pruebas 2 a 6, STOP (cinco comandos 0), formato CSV de telemetría, log en pantalla y `dji_errors.log`.
 - API Key y versiones de AGP / SDK / dependencias.
@@ -53,8 +53,8 @@ com.diegorivas.drone/
 
 | Botón | Qué hace |
 |---|---|
-| **ATERRIZAR** | Ya existía en el XML pero no tenía código. `startLanding()` + `confirmLanding()` automático cerca del suelo. Pide confirmación. |
-| **1. ACTIVAR CONTROL** | Ahora también **desactiva** (devuelve el control al mando). |
+| **ATERRIZAR** | Desactiva Virtual Stick, `startLanding()` con reintentos y `confirmLanding()` automático cerca del suelo. Pide confirmación. |
+| **1. ACTIVAR CONTROL** | Opcional. Activa/desactiva Virtual Stick a mano (las pruebas ya lo activan solas). |
 | **7. GPS A → B → A (3 m)** | Virtual Stick con corrección por GPS del dron: va a 3 m en la dirección del morro y vuelve. Aborta y queda en hover si pierde GPS, si tarda > 30 s o si se **aleja** del objetivo. |
 | **WP: CARGAR A→B→A (5 m)** | Misión Waypoint de prueba desde la posición actual (3 m de altura, 1 m/s). |
 | **WP: CARGAR RUTA DEL PANEL** | Descarga la ruta activa dibujada en el panel web. |
@@ -68,6 +68,35 @@ Si el despegue falla, el log muestra `code`, descripción y el estado del dron (
 
 **Virtual Stick y Waypoint nunca a la vez:** `FlightControllerManager` guarda el modo activo
 (`IDLE / VIRTUAL_STICK / WAYPOINT`) y rechaza el otro.
+
+## Despegue y aterrizaje (rehechos)
+
+`FlightControllerManager` es ahora una máquina de estados (`ON_GROUND → TAKING_OFF → IN_AIR → LANDING`):
+
+- **Despegar ya no necesita "1. ACTIVAR CONTROL".** Antes de `startTakeoff()` y de `startLanding()`
+  la app **desactiva Virtual Stick en el dron** (aunque crea que ya lo está). Con Virtual Stick activo
+  el dron ignora el mando y puede rechazar despegar/aterrizar: esa era la causa probable de que
+  ATERRIZAR no funcionara.
+- Las pruebas 4–7 activan Virtual Stick solas cuando hacen falta.
+- Comprobaciones previas con mensaje claro: mando en **S (Sport)** o Trípode, motores ya encendidos,
+  batería, IMU calentándose, error de brújula, Return-To-Home.
+- Si el SDK rechaza la orden se reintenta; si aun así falla, el mensaje dice qué revisar.
+- Aterrizaje: reintentos, `confirmLanding()` automático y, si no puede, indica aterrizar con el mando.
+- Al conectar el dron se desactiva Virtual Stick para empezar siempre con estado limpio.
+- `dji_errors.log` guarda ahora **todo** (también lo que funcionó), no sólo los errores.
+
+## Vuelos, telemetría y video en la PC
+
+- **Un vuelo = despegue → aterrizaje** (por `IS_FLYING`, despegue desde la app o desde el mando).
+  Cada vuelo tiene su id `vuelo_AAAAMMDD_HHMMSS`; en tierra se usa `tierra_...`.
+- Al despegar se **graba el video automáticamente** y se envía a la PC; al aterrizar se cierra y se
+  manda `FLIGHT_END`. La PC guarda `storage/flights/<vuelo>/telemetria.csv`, `video.mp4` y `resumen.json`.
+- **Video en vivo**: `LiveFrameStreamer` envía ~8 fotogramas JPEG/s de la pantalla a `/api/live/frame`
+  siempre que el dron esté conectado (sin pulsar REC). Sustituye al H.264 en vivo, que se veía negro.
+- El botón ● REC sigue creando tramos de recorrido. Durante un vuelo dice **■ STOP (vuelo)**:
+  corta la grabación automática.
+
+Requiere la rama del mismo nombre en **drone-ground-station**.
 
 ## ⚠ Verificar antes de usar la navegación GPS (botón 7)
 
