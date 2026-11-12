@@ -35,7 +35,8 @@ class TelemetryApi(
         Thread(r, "telemetry-api").apply { isDaemon = true }
     }
 
-    private val samples = ArrayDeque<JSONObject>()
+    /** Cada muestra lleva el id del vuelo en el que se tomó (el id cambia al despegar/aterrizar). */
+    private val samples = ArrayDeque<Pair<String, JSONObject>>()
     private val events = ArrayDeque<JSONObject>()
     private var lastSampleMs = 0L
 
@@ -62,9 +63,10 @@ class TelemetryApi(
         val now = System.currentTimeMillis()
         if (now - lastSampleMs < SAMPLE_INTERVAL_MS) return
         lastSampleMs = now
+        val id = flightId ?: return
         val json = try { telemetryToJson(t) } catch (_: Exception) { return }
         executor.execute {
-            samples.addLast(json)
+            samples.addLast(id to json)
             while (samples.size > MAX_QUEUED_SAMPLES) samples.removeFirst()
         }
     }
@@ -123,14 +125,15 @@ class TelemetryApi(
 
     private fun flush() {
         flushEvents()
-        val id = flightId ?: return
         while (samples.isNotEmpty()) {
+            // Un lote = muestras consecutivas del mismo vuelo.
+            val id = samples.peekFirst()?.first ?: return
             val batch = JSONArray()
-            val taken = mutableListOf<JSONObject>()
-            while (samples.isNotEmpty() && taken.size < MAX_BATCH) {
+            val taken = mutableListOf<Pair<String, JSONObject>>()
+            while (samples.isNotEmpty() && taken.size < MAX_BATCH && samples.peekFirst()?.first == id) {
                 taken.add(samples.removeFirst())
             }
-            taken.forEach { batch.put(it) }
+            taken.forEach { batch.put(it.second) }
             val body = JSONObject()
                 .put("flight_id", id)
                 .put("drone_model", droneModel ?: JSONObject.NULL)

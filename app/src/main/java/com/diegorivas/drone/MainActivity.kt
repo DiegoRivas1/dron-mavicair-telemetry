@@ -24,12 +24,12 @@ import com.diegorivas.drone.data.repository.RouteRepository
 import com.diegorivas.drone.dji.DjiConnectionManager
 import com.diegorivas.drone.dji.FlightControllerManager
 import com.diegorivas.drone.dji.NavigationMode
-import com.diegorivas.drone.dji.TakeoffMethod
 import com.diegorivas.drone.dji.TelemetryManager
 import com.diegorivas.drone.dji.VideoManager
 import com.diegorivas.drone.dji.VirtualStickController
 import com.diegorivas.drone.dji.WaypointMissionManager
 import com.diegorivas.drone.network.ApiClient
+import com.diegorivas.drone.network.LiveFrameStreamer
 import com.diegorivas.drone.network.TelemetryApi
 import com.diegorivas.drone.network.RecorridoClient
 import com.diegorivas.drone.network.VideoStreamClient
@@ -49,7 +49,12 @@ import java.util.Locale
  *  - dji/VirtualStickController  movimiento por tiempo y por GPS
  *  - dji/WaypointMissionManager  misiones GPS de DJI
  *  - dji/VideoManager            video en vivo + grabación + envío a PC
+ *  - network/LiveFrameStreamer   video en vivo (JPEG) al panel de la PC
  *  - network (ApiClient, ...)    comunicación con FastAPI en la PC
+ *
+ * Un VUELO va del despegue al aterrizaje (IS_FLYING). Al despegar se abre un vuelo
+ * nuevo y se graba el video automáticamente; al aterrizar se cierra y la PC guarda
+ * su carpeta con telemetria.csv y video.mp4.
  */
 class MainActivity : AppCompatActivity(), DjiConnectionManager.Listener {
 
@@ -74,7 +79,7 @@ class MainActivity : AppCompatActivity(), DjiConnectionManager.Listener {
         private const val TEST_SPEED = 0.25f
         private const val LEG_DURATION_MS = 4000L
         private const val TAKEOFF_TARGET_ALTITUDE = 0.9
-        private const val TAKEOFF_TIMEOUT_MS = 15000L
+        private const val TAKEOFF_TIMEOUT_MS = 20000L
         private const val TAKEOFF_STABILIZATION_MS = 2000L
         private const val FORWARD_TEST_DURATION_MS = 1000L
 
@@ -126,6 +131,7 @@ class MainActivity : AppCompatActivity(), DjiConnectionManager.Listener {
     private lateinit var video: VideoManager
     private lateinit var tramoRecorder: TramoRecorder
     private lateinit var recorridoClient: RecorridoClient
+    private lateinit var liveStreamer: LiveFrameStreamer
 
     /** Handler para la UI y log. */
     private val uiHandler = Handler(Looper.getMainLooper())
@@ -135,8 +141,11 @@ class MainActivity : AppCompatActivity(), DjiConnectionManager.Listener {
 
     private var forwardTestCompleted = false
     private var stabilizing = false
-    private var takeoffRetrying = false
     private var gpsNavRunning = false
+    /** Último IS_FLYING procesado para abrir/cerrar vuelos. */
+    private var flightOpen = false
+    /** La grabación en curso la inició el vuelo (no el botón REC). */
+    private var autoRecording = false
     private var djiStatus = "Inicializando..."
     private var serverOk = false
 
@@ -165,7 +174,7 @@ class MainActivity : AppCompatActivity(), DjiConnectionManager.Listener {
         } else {
             requestMissingPermissions()
         }
-        logI("App iniciada. Vuelo: ${flightRepository.session.id}")
+        logI("App iniciada. Sesión: ${flightRepository.session.id}")
     }
 
     private fun bindViews() {
@@ -232,6 +241,7 @@ class MainActivity : AppCompatActivity(), DjiConnectionManager.Listener {
         video = VideoManager(this, videoStreamClient)
         tramoRecorder = TramoRecorder(this)
         recorridoClient = RecorridoClient(apiClient)
+        liveStreamer = LiveFrameStreamer(apiClient, videoSurface) { msg -> logI(msg) }
         serverButton.text = "PC: ${apiClient.baseUrl}"
     }
 
@@ -262,6 +272,8 @@ class MainActivity : AppCompatActivity(), DjiConnectionManager.Listener {
         flightHandler.removeCallbacksAndMessages(null)
         flight.cancelAll()
         virtualStick.stopMovement()
+        liveStreamer.shutdown()
+        if (flightRepository.inFlight) closeFlight("app cerrada")
 
         // 2) Intentar liberar Virtual Stick con confirmación (no bloqueante)
         if (virtualStick.isEnabled) {
@@ -312,11 +324,11 @@ class MainActivity : AppCompatActivity(), DjiConnectionManager.Listener {
             errorLogScroll.post { errorLogScroll.fullScroll(ScrollView.FOCUS_DOWN) }
         }
 
-        if (level == 'E' || level == 'W') {
-            try {
-                File(getExternalFilesDir(null), "dji_errors.log").appendText(line)
-            } catch (_: Exception) { }
-        }
+        // Se guarda TODO (también lo que funcionó): sin eso no se puede saber
+        // qué pasó en un vuelo que salió bien y en el siguiente que falló.
+        try {
+            File(getExternalFilesDir(null), "dji_errors.log").appendText(line)
+        } catch (_: Exception) { }
     }
 
     private fun logE(message: String) = log('E', message)
@@ -376,6 +388,9 @@ class MainActivity : AppCompatActivity(), DjiConnectionManager.Listener {
         telemetryManager.start()
         waypoints.attach()
         video.startVideoFeed()
+        liveStreamer.start()
+        // Estado limpio: Virtual Stick pudo quedar activo en el dron de una sesión anterior.
+        if (flightControllerAvailable) flight.forceVirtualStickOff { refreshButtons() }
         refreshButtons()
     }
 
@@ -383,12 +398,11 @@ class MainActivity : AppCompatActivity(), DjiConnectionManager.Listener {
         djiStatus = "PRODUCT DISCONNECTED\nFlightController: NO DISPONIBLE"
         updateStatus()
         flightHandler.removeCallbacksAndMessages(null)
-        flight.cancelAll()
         virtualStick.reset()
-        flight.release(NavigationMode.WAYPOINT)
+        flight.reset()
+        liveStreamer.stop()
         gpsNavRunning = false
         stabilizing = false
-        takeoffRetrying = false
         showStatus("DRON DESCONECTADO")
         logW("Producto DJI desconectado")
         event("DRONE_DISCONNECTED", "")
@@ -399,6 +413,7 @@ class MainActivity : AppCompatActivity(), DjiConnectionManager.Listener {
         djiStatus = "DRONE CONNECTED\nFlightController: ${if (available) "OK" else "NO DISPONIBLE"}"
         updateStatus()
         logI("FlightController component changed: $available")
+        if (available) flight.forceVirtualStickOff { refreshButtons() }
         refreshButtons()
     }
 
@@ -415,6 +430,8 @@ class MainActivity : AppCompatActivity(), DjiConnectionManager.Listener {
     private var lastButtonsRefresh = 0L
 
     private fun onTelemetry(data: TelemetryData) {
+        flight.syncWithTelemetry(data)
+        trackFlight(data)
         flightRepository.onTelemetry(data)
         tramoRecorder.onTelemetry(data)
 
@@ -448,7 +465,7 @@ class MainActivity : AppCompatActivity(), DjiConnectionManager.Listener {
     // =========================================================
 
     private val busy: Boolean
-        get() = flight.takeoffRunning || takeoffRetrying || stabilizing || virtualStick.isMoving ||
+        get() = flight.takeoffRunning || stabilizing || virtualStick.isMoving ||
                 gpsNavRunning || flight.landingRunning || waypoints.isExecuting
 
     private fun refreshButtons() {
@@ -459,12 +476,15 @@ class MainActivity : AppCompatActivity(), DjiConnectionManager.Listener {
         enableVirtualStickButton.isEnabled = !wpActive && !busy
         enableVirtualStickButton.text = if (vs) "CONTROL ACTIVO (pulsar = desactivar)" else "1. ACTIVAR CONTROL"
 
-        takeoffButton.isEnabled = vs && !flying && !busy
-        autoTestButton.isEnabled = vs && !flying && !busy
-        testForwardButton.isEnabled = vs && flying && !busy
-        testOneMeterButton.isEnabled = vs && flying && !busy
-        returnButton.isEnabled = vs && flying && !busy && forwardTestCompleted
-        gpsOutAndBackButton.isEnabled = vs && flying && !busy
+        // Despegar ya NO necesita Virtual Stick: se desactiva solo antes de despegar.
+        // Las pruebas de movimiento lo activan solas cuando hacen falta.
+        val fcOk = connection.flightController != null
+        takeoffButton.isEnabled = fcOk && !flying && !t.areMotorsOn && !busy && !wpActive
+        autoTestButton.isEnabled = fcOk && !flying && !t.areMotorsOn && !busy && !wpActive
+        testForwardButton.isEnabled = flying && !busy && !wpActive
+        testOneMeterButton.isEnabled = flying && !busy && !wpActive
+        returnButton.isEnabled = flying && !busy && !wpActive && forwardTestCompleted
+        gpsOutAndBackButton.isEnabled = flying && !busy && !wpActive
 
         landingButton.isEnabled = (flying || t.areMotorsOn) && !flight.landingRunning
 
@@ -502,8 +522,8 @@ class MainActivity : AppCompatActivity(), DjiConnectionManager.Listener {
             if (err == null) {
                 showStatus(
                     "VIRTUAL STICK: ACTIVO\n\n" +
-                            "El dron NO despega al activar control.\n" +
-                            "Usa DESPEGAR → 1 m o PRUEBA AUTOMÁTICA."
+                            "Mientras está activo, el mando NO mueve el dron.\n" +
+                            "No hace falta para despegar: DESPEGAR lo desactiva solo."
                 )
             } else {
                 showStatus("ERROR ACTIVANDO:\n$err")
@@ -513,27 +533,24 @@ class MainActivity : AppCompatActivity(), DjiConnectionManager.Listener {
     }
 
     // =========================================================
-    // DESPEGUE AUTOMÁTICO (misma secuencia que la versión que funcionaba)
+    // DESPEGUE (rehecho: ver FlightControllerManager)
     // =========================================================
 
     private fun startAutomaticTakeoff() = takeoffSequence(thenForward = false)
 
     private fun startAutomaticTest() = takeoffSequence(thenForward = true)
 
+    /**
+     * 1. Comprobaciones (modo P, batería, brújula, IMU...).
+     * 2. FlightControllerManager desactiva Virtual Stick en el dron y llama a startTakeoff().
+     * 3. Al llegar a ~1 m: estabilizar y, si es la prueba automática, avanzar 1 s.
+     */
     private fun takeoffSequence(thenForward: Boolean) {
         if (busy) {
-            Toast.makeText(this, "Ya hay una prueba ejecutándose", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Ya hay una operación en curso", Toast.LENGTH_SHORT).show()
             return
         }
-        if (!virtualStick.isEnabled) {
-            showStatus("Primero activa Virtual Stick")
-            return
-        }
-        if (t.isFlying) {
-            showStatus("EL DRON YA ESTÁ VOLANDO\n\nNo se ejecutará otro despegue.")
-            return
-        }
-        FlightValidator.canTakeoff(t)?.let {
+        flight.takeoffBlocker()?.let {
             showStatus("DESPEGUE BLOQUEADO\n\n$it")
             logW("TAKEOFF bloqueado: $it")
             return
@@ -542,133 +559,116 @@ class MainActivity : AppCompatActivity(), DjiConnectionManager.Listener {
         forwardTestCompleted = false
         val eventName = if (thenForward) "AUTO_TEST_START" else "TAKEOFF_START"
         event(eventName, if (thenForward) "Takeoff -> 1m -> forward 1s -> stop" else "Despegue automático solicitado")
-        logI("$eventName solicitado | ${flight.diagnostics()}")
-        showStatus(
-            if (thenForward) "PRUEBA AUTOMÁTICA\n\n1. Despegue → 1 m\n2. Estabilización\n3. Avance 1 s\n4. STOP"
-            else "DESPEGUE AUTOMÁTICO\n\nSubiendo aproximadamente a 1 m..."
-        )
-
-        takeoffRetrying = true
-        attemptTakeoff(1, thenForward)
-        refreshButtons()
-    }
-
-    /**
-     * Intentos de despegue (cada uno sólo si el anterior fue RECHAZADO por el SDK,
-     * es decir, los motores ni arrancaron):
-     *   1. startTakeoff() con Virtual Stick ACTIVO      (igual que la versión anterior)
-     *   2. startTakeoff() con Virtual Stick DESACTIVADO (algunos firmwares lo rechazan con VS activo)
-     *   3. KeyManager TAKE_OFF con Virtual Stick DESACTIVADO
-     * Si despega con VS desactivado, se vuelve a activar al alcanzar la altura.
-     * El log indica qué intento funcionó: así sabremos la causa real del error 255.
-     */
-    private fun attemptTakeoff(attempt: Int, thenForward: Boolean) {
-        val method = if (attempt == 3) TakeoffMethod.KEY_ACTION else TakeoffMethod.SDK_CALL
-        logI("TAKEOFF intento $attempt/3 ($method, VirtualStick=${virtualStick.isEnabled})")
 
         flight.takeoff(
             targetAltitude = TAKEOFF_TARGET_ALTITUDE,
             timeoutMs = TAKEOFF_TIMEOUT_MS,
-            method = method,
-            onError = { err ->
-                event("TAKEOFF_ERROR", "intento $attempt ($method, VS=${virtualStick.isEnabled}): $err")
-                when {
-                    attempt == 1 && virtualStick.isEnabled -> {
-                        showStatus("DESPEGUE RECHAZADO (intento 1)\n\n$err\n\nReintentando sin Virtual Stick...")
-                        virtualStick.disable { dErr ->
-                            if (dErr != null) {
-                                takeoffFailed("No se pudo desactivar Virtual Stick: $dErr")
-                            } else {
-                                flightHandler.postDelayed({ attemptTakeoff(2, thenForward) }, 500L)
-                            }
-                        }
-                    }
-                    attempt < 3 -> {
-                        showStatus("DESPEGUE RECHAZADO (intento $attempt)\n\n$err\n\nReintentando por KeyManager...")
-                        flightHandler.postDelayed({ attemptTakeoff(3, thenForward) }, 500L)
-                    }
-                    else -> takeoffFailed(err)
-                }
-            },
-            onTakeoffAccepted = {
-                event("TAKEOFF_ACCEPTED", "intento $attempt ($method)")
-                showStatus("DESPEGANDO... (intento $attempt)\n\nEsperando aproximadamente 1 m")
+            onProgress = { msg ->
+                showStatus(if (thenForward) "PRUEBA AUTOMÁTICA\n\n$msg" else "DESPEGUE\n\n$msg")
                 refreshButtons()
             },
-            onAltitudeReached = { alt ->
-                showStatus("ALTURA ALCANZADA\n\nAltitud: ${alt?.let { "%.2f m".format(it) } ?: "--"}\n\nEstabilizando...")
-                logI("TAKEOFF ALTURA ALCANZADA: $alt (intento $attempt)")
-                event("TAKEOFF_ALTITUDE_REACHED", "Altura objetivo alcanzada")
-                takeoffRetrying = false
-                if (virtualStick.isEnabled) {
-                    stabilizeThen(thenForward)
-                } else {
-                    // Se desactivó para despegar: reactivar para STOP y pruebas.
-                    virtualStick.enable { vErr ->
-                        if (vErr != null) {
-                            logE("No se pudo reactivar Virtual Stick tras despegar: $vErr")
-                            showStatus("EN EL AIRE (hover)\n\nVirtual Stick NO se reactivó: $vErr\nUsa el control remoto o pulsa 1.")
-                            flight.finishTakeoff()
-                            refreshButtons()
-                        } else {
-                            stabilizeThen(thenForward)
-                        }
-                    }
-                }
+            onAirborne = { alt ->
+                logI("TAKEOFF en el aire: alt=$alt")
+                event("TAKEOFF_ALTITUDE_REACHED", "alt=$alt")
+                showStatus("EN EL AIRE\n\nAltitud: ${alt?.let { "%.2f m".format(it) } ?: "--"}\n\nEstabilizando...")
+                stabilizeThen(thenForward)
             },
-            onTimeout = { alt ->
-                takeoffRetrying = false
-                virtualStick.sendOnce(0f, 0f)
-                showStatus("TIMEOUT DESPEGUE\n\nNo se confirmó altura de 1 m.\nComando horizontal = 0")
-                logE("TAKEOFF TIMEOUT: no se alcanzó $TAKEOFF_TARGET_ALTITUDE m en $TAKEOFF_TIMEOUT_MS ms (alt=$alt)")
-                event("TAKEOFF_TIMEOUT", "No se alcanzó la altura objetivo")
+            onError = { err ->
+                event("TAKEOFF_ERROR", err)
+                logE("TAKEOFF falló: $err")
+                showStatus("NO DESPEGÓ\n\n$err\n\n${flight.diagnostics()}")
                 refreshButtons()
             }
         )
-    }
-
-    private fun takeoffFailed(err: String) {
-        takeoffRetrying = false
-        showStatus(
-            "ERROR DE DESPEGUE (3 intentos)\n\n$err\n\n${flight.diagnostics()}\n\n" +
-                    "Prueba despegar con DJI GO 4 en el mismo sitio:\nsi tampoco puede, el bloqueo es del dron (zona GEO, calibración...)."
-        )
-        logE("TAKEOFF: los 3 intentos fallaron")
-        // Dejar Virtual Stick como estaba al empezar.
-        if (!virtualStick.isEnabled) virtualStick.enable { refreshButtons() }
         refreshButtons()
     }
 
     private fun stabilizeThen(thenForward: Boolean) {
         stabilizing = true
+        refreshButtons()
         flightHandler.postDelayed({
             if (!stabilizing) return@postDelayed
             stabilizing = false
-            flight.finishTakeoff()
-            virtualStick.sendOnce(0f, 0f)
             event("TAKEOFF_STABILIZED", "Dron estabilizado aproximadamente a 1 m")
             logI("TAKEOFF ESTABILIZADO")
             if (thenForward) {
-                showStatus("DESPEGUE COMPLETADO\n\nAltura aproximada: 1 m\nIniciando prueba adelante...")
+                showStatus("DESPEGUE COMPLETADO\n\nIniciando prueba adelante...")
                 refreshButtons()
                 startShortForwardTest()
             } else {
-                showStatus("DRON ESTABILIZADO\n\nAltura aproximada: 1 m\n\nListo para la prueba.")
+                showStatus(
+                    "DRON EN HOVER (~1 m)\n\n" +
+                            "El mando sigue teniendo el control.\n" +
+                            "Pruebas 4-7: activan Virtual Stick solas.\nATERRIZAR cuando quieras."
+                )
                 refreshButtons()
             }
         }, TAKEOFF_STABILIZATION_MS)
     }
 
     // =========================================================
-    // PRUEBAS POR TIEMPO (sin cambios de comportamiento)
+    // VUELO = despegue → aterrizaje (telemetría + video por vuelo)
     // =========================================================
+
+    /** Abre/cierra el vuelo según IS_FLYING, venga el despegue de la app o del mando. */
+    private fun trackFlight(data: TelemetryData) {
+        if (!flightOpen && data.isFlying) {
+            flightOpen = true
+            openFlight()
+        } else if (flightOpen && !data.isFlying && !data.areMotorsOn) {
+            flightOpen = false
+            closeFlight("aterrizado")
+        }
+    }
+
+    private fun openFlight() {
+        val id = flightRepository.startFlight()
+        event("FLIGHT_START", "Vuelo $id")
+        logI("VUELO INICIADO: $id")
+        if (!video.isRecording) {
+            video.startRecording(recordingId = id, flightId = id)
+            autoRecording = true
+            recButton.text = "■ STOP (vuelo)"
+            logI("Grabando video del vuelo $id (automático)")
+        }
+    }
+
+    private fun closeFlight(reason: String) {
+        if (autoRecording) stopAutoRecording()
+        // FLIGHT_END va con el id del vuelo: la PC genera su carpeta (CSV + MP4).
+        event("FLIGHT_END", reason)
+        val id = flightRepository.endFlight()
+        logI("VUELO CERRADO: $id ($reason). La PC guarda telemetria.csv y video.mp4")
+    }
+
+    private fun stopAutoRecording() {
+        val file = video.stopRecording()
+        autoRecording = false
+        recButton.text = "● REC"
+        logI("Video del vuelo cerrado (${file?.length()?.div(1024) ?: 0} KB), enviando a la PC")
+    }
+
+    // =========================================================
+    // PRUEBAS DE MOVIMIENTO (activan Virtual Stick solas)
+    // =========================================================
+
+    /** Activa Virtual Stick si hace falta y luego ejecuta la acción. */
+    private fun withVirtualStick(action: () -> Unit) {
+        if (virtualStick.isEnabled) return action()
+        showStatus("Activando Virtual Stick...")
+        virtualStick.ensureEnabled { err ->
+            if (err != null) {
+                showStatus("NO SE PUDO ACTIVAR VIRTUAL STICK\n\n$err")
+                refreshButtons()
+            } else {
+                refreshButtons()
+                action()
+            }
+        }
+    }
 
     private fun canMoveByTime(name: String): Boolean {
         if (busy) return false
-        if (!virtualStick.isEnabled) {
-            showStatus("Primero activa Virtual Stick")
-            return false
-        }
         if (!t.isFlying) {
             showStatus("PRUEBA BLOQUEADA\n\nEl dron no está volando.")
             logW("$name bloqueado: no está volando")
@@ -686,6 +686,10 @@ class MainActivity : AppCompatActivity(), DjiConnectionManager.Listener {
             return
         }
         forwardTestCompleted = false
+        withVirtualStick { doShortForwardTest() }
+    }
+
+    private fun doShortForwardTest() {
         showStatus("PRUEBA ADELANTE\n\nAvanzando durante 1 segundo...")
         event("FORWARD_TEST_START", "Forward $TEST_SPEED m/s durante 1 s")
         logI("FORWARD_TEST_START a $TEST_SPEED m/s durante ${FORWARD_TEST_DURATION_MS}ms")
@@ -706,22 +710,28 @@ class MainActivity : AppCompatActivity(), DjiConnectionManager.Listener {
             showStatus("REGRESO BLOQUEADO\n\nPrimero ejecuta la prueba adelante.")
             return
         }
-        showStatus("REGRESANDO\n\nInvirtiendo el último movimiento durante 1 s...")
-        event("RETURN_START", "Regreso por inversión del comando durante 1 s")
-        logI("RETURN_START")
+        withVirtualStick {
+            showStatus("REGRESANDO\n\nInvirtiendo el último movimiento durante 1 s...")
+            event("RETURN_START", "Regreso por inversión del comando durante 1 s")
+            logI("RETURN_START")
 
-        virtualStick.moveFor(-TEST_SPEED, 0f, FORWARD_TEST_DURATION_MS) {
-            forwardTestCompleted = false
-            showStatus("REGRESO FINALIZADO\n\nSTOP enviado.\nEl dron queda en hover.")
-            logI("RETURN_FINISHED")
-            event("RETURN_FINISHED", "Regreso finalizado")
+            virtualStick.moveFor(-TEST_SPEED, 0f, FORWARD_TEST_DURATION_MS) {
+                forwardTestCompleted = false
+                showStatus("REGRESO FINALIZADO\n\nSTOP enviado.\nEl dron queda en hover.")
+                logI("RETURN_FINISHED")
+                event("RETURN_FINISHED", "Regreso finalizado")
+                refreshButtons()
+            }
             refreshButtons()
         }
-        refreshButtons()
     }
 
     private fun startOneMeterTest() {
         if (!canMoveByTime("TEST A→1m→A")) return
+        withVirtualStick { doOneMeterTest() }
+    }
+
+    private fun doOneMeterTest() {
         event("TEST_START", "A -> 1m -> A; speed=$TEST_SPEED")
         logI("TEST_START A→1m→A")
         showStatus("PRUEBA INICIADA\n\nA → B\nAvanzando...")
@@ -754,14 +764,18 @@ class MainActivity : AppCompatActivity(), DjiConnectionManager.Listener {
             }
         val a = route.points[0]
         val b = route.points[1]
+        withVirtualStick { doGpsOutAndBack(a.latitude, a.longitude, b.latitude, b.longitude) }
+    }
+
+    private fun doGpsOutAndBack(aLat: Double, aLon: Double, bLat: Double, bLon: Double) {
         gpsNavRunning = true
-        event("GPS_ABA_START", "A=(${a.latitude},${a.longitude}) B=(${b.latitude},${b.longitude})")
+        event("GPS_ABA_START", "A=($aLat,$aLon) B=($bLat,$bLon)")
         logI("GPS_ABA_START: B a $GPS_TEST_DISTANCE_M m, rumbo ${t.heading}")
         showStatus("GPS A → B\n\nYendo a B ($GPS_TEST_DISTANCE_M m)...")
         refreshButtons()
 
         val params = VirtualStickController.GoToParams()
-        virtualStick.goTo(b.latitude, b.longitude, params,
+        virtualStick.goTo(bLat, bLon, params,
             onProgress = { d -> showStatus("GPS A → B\n\nDistancia a B: ${"%.1f".format(d)} m") },
             onDone = { ok, msg ->
                 event(if (ok) "GPS_POINT_B" else "GPS_ABA_ABORTED", msg)
@@ -771,7 +785,7 @@ class MainActivity : AppCompatActivity(), DjiConnectionManager.Listener {
                     refreshButtons()
                 } else {
                     showStatus("PUNTO B\n\n$msg\nRegresando a A...")
-                    flightHandler.postDelayed({ gpsReturnToA(a.latitude, a.longitude, params) }, 1500L)
+                    flightHandler.postDelayed({ gpsReturnToA(aLat, aLon, params) }, 1500L)
                 }
             })
     }
@@ -797,9 +811,7 @@ class MainActivity : AppCompatActivity(), DjiConnectionManager.Listener {
 
     private fun emergencyStop() {
         stabilizing = false
-        takeoffRetrying = false
         gpsNavRunning = false
-        flight.cancelTakeoffWait()
         flightHandler.removeCallbacksAndMessages(null)
 
         if (waypoints.isExecuting || flight.navigationMode == NavigationMode.WAYPOINT) {
@@ -808,7 +820,15 @@ class MainActivity : AppCompatActivity(), DjiConnectionManager.Listener {
                 refreshButtons()
             }
         }
+        val wasLanding = flight.landingRunning
+        flight.cancelAll()
         virtualStick.hover()
+        if (wasLanding) {
+            // STOP durante el aterrizaje: el dron se queda en el aire (hover).
+            connection.flightController?.cancelLanding { err ->
+                uiHandler.post { if (err != null) logW("cancelLanding: ${err.description}") }
+            }
+        }
 
         event("MANUAL_STOP", "STOP solicitado por usuario")
         logW("MANUAL_STOP solicitado por usuario")
@@ -826,47 +846,37 @@ class MainActivity : AppCompatActivity(), DjiConnectionManager.Listener {
             .show()
     }
 
+    /**
+     * 1. Corta pruebas/misiones en curso.
+     * 2. FlightControllerManager desactiva Virtual Stick (antes no se hacía y el dron
+     *    rechazaba startLanding con Virtual Stick activo) y llama a startLanding().
+     * 3. Confirma el aterrizaje cerca del suelo y espera a que se apaguen los motores.
+     */
     private fun doLanding() {
         stabilizing = false
-        takeoffRetrying = false
         gpsNavRunning = false
         flightHandler.removeCallbacksAndMessages(null)
         virtualStick.stopMovement()
-        if (waypoints.isExecuting) waypoints.stop { }
         virtualStick.sendOnce(0f, 0f)
+        if (waypoints.isExecuting) waypoints.stop { }
 
         event("LANDING_START", "Aterrizaje solicitado")
-        showStatus("ATERRIZANDO...")
         flight.land(
-            onStarted = {
-                logI("LANDING iniciado")
-                refreshButtons()
-            },
-            onError = { err ->
-                showStatus("ERROR DE ATERRIZAJE\n\n$err")
-                event("LANDING_ERROR", err)
+            onProgress = { msg ->
+                showStatus(msg)
                 refreshButtons()
             },
             onLanded = {
                 forwardTestCompleted = false
                 event("LANDED", "")
-                logI("LANDING completado")
-                showStatus("ATERRIZADO\n\nLiberando control...")
-                if (virtualStick.isEnabled) {
-                    virtualStick.disable { err ->
-                        if (err == null) {
-                            showStatus("ATERRIZADO\n\nControl liberado.\nListo para otro vuelo.")
-                            logI("VS liberado tras aterrizaje")
-                        } else {
-                            showStatus("ATERRIZADO\n\nAviso: no se pudo liberar VS:\n$err")
-                            logW("Fallo liberando VS tras aterrizaje: $err")
-                        }
-                        refreshButtons()
-                    }
-                } else {
-                    showStatus("ATERRIZADO\n\nMotores apagados.")
-                    refreshButtons()
-                }
+                showStatus("ATERRIZADO\n\nMotores apagados.\nListo para otro vuelo.")
+                refreshButtons()
+            },
+            onError = { err ->
+                event("LANDING_ERROR", err)
+                logE("LANDING falló: $err")
+                showStatus("ERROR DE ATERRIZAJE\n\n$err")
+                refreshButtons()
             }
         )
         refreshButtons()
@@ -982,6 +992,12 @@ class MainActivity : AppCompatActivity(), DjiConnectionManager.Listener {
      *        en el teléfono y se reenvía con REENVIAR TRAMOS PENDIENTES.
      */
     private fun toggleRecording() {
+        if (autoRecording) {
+            // ■ STOP (vuelo): corta el video automático del vuelo (se guarda igual como
+            // video.mp4 del vuelo). Volver a pulsar ● REC empieza un tramo.
+            stopAutoRecording()
+            return
+        }
         if (video.isRecording) {
             val file = video.stopRecording()
             val dir = tramoRecorder.stop(video.firstVideoDataMs, connection.connectedModel)

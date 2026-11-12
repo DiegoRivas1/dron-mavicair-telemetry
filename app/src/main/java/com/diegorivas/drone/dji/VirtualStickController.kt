@@ -58,6 +58,15 @@ class VirtualStickController(
     private var gpsLoop: Runnable? = null
     private var groundFrame = false
 
+    init {
+        // FlightControllerManager apaga Virtual Stick antes de despegar/aterrizar.
+        flight.onVirtualStickForcedOff = {
+            stopMovement()
+            if (isEnabled) onLog('I', "VirtualStick: desactivado por despegue/aterrizaje")
+            isEnabled = false
+        }
+    }
+
     // =========================================================
     // ACTIVAR / DESACTIVAR
     // =========================================================
@@ -84,6 +93,12 @@ class VirtualStickController(
                 }
             }
         })
+    }
+
+    /** Activa Virtual Stick sólo si hace falta (para las pruebas de movimiento). */
+    fun ensureEnabled(onResult: (String?) -> Unit) {
+        if (isEnabled && flight.navigationMode == NavigationMode.VIRTUAL_STICK) return onResult(null)
+        enable(onResult)
     }
 
     fun disable(onResult: (String?) -> Unit = {}) {
@@ -173,7 +188,6 @@ class VirtualStickController(
         main.post(r)
     }
 
-    /** Mueve el dron a la velocidad indicada durante durationMs y luego envía 0. */
     private var moveEndRunnable: Runnable? = null
 
     /** Mueve el dron a la velocidad indicada durante durationMs y luego envía 0. */
@@ -201,7 +215,6 @@ class VirtualStickController(
         rightCmd = right
     }
 
-    /** Detiene envíos/bucles. No manda ningún comando por sí mismo. */
     /** Detiene envíos/bucles. No manda ningún comando por sí mismo. */
     fun stopMovement() {
         isMoving = false
